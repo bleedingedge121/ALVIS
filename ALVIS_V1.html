@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>ALVIS — Voice Intelligence System</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;900&family=Space+Grotesk:wght@300;400;500;600&family=Share+Tech+Mono&display=swap"
+    rel="stylesheet">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    :root {
+      --cyan: #5deeff;
+      --cyan-dim: #1a8fa0;
+      --cyan-b: rgba(93, 238, 255, 0.22);
+      --mag: #d946ef;
+      --gold: #f59e0b;
+      --red: #ef4444;
+      --bg: #020912;
+      --panel: rgba(4, 14, 28, 0.82);
+      --tp: #e8ffff;
+      --ts: rgba(93, 238, 255, 0.8);
+      --td: rgba(93, 238, 255, 0.38);
+      --ob: 'Orbitron', monospace;
+      --gr: 'Space Grotesk', sans-serif;
+      --mo: 'Share Tech Mono', monospace;
+    }
+
+    html,
+    body,
+    #root {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--tp)
+    }
+
+    canvas {
+      display: block
+    }
+
+    ::-webkit-scrollbar {
+      width: 3px
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--cyan-dim);
+      border-radius: 2px
+    }
+
+    .lbl {
+      font-family: var(--ob);
+      font-size: 10px;
+      letter-spacing: .14em;
+      color: var(--td);
+      text-transform: uppercase;
+      margin-bottom: 4px
+    }
+
+    .val {
+      font-family: var(--mo);
+      font-size: 17px;
+      color: var(--cyan)
+    }
+
+    .mono {
+      font-family: var(--mo)
+    }
+
+    input.alvis-input, button.alvis-btn {
+      font-family: var(--mo);
+      outline: none;
+    }
+
+    input.alvis-input::placeholder {
+      color: var(--td);
+    }
+
+    button.alvis-btn {
+      cursor: pointer;
+      background: rgba(93, 238, 255, .06);
+      border: 1px solid var(--cyan-b);
+      color: var(--cyan);
+      transition: all .2s;
+    }
+
+    button.alvis-btn:hover {
+      background: rgba(93, 238, 255, .14);
+    }
+
+    button.alvis-btn:disabled {
+      opacity: .4;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="importmap">
+{"imports":{"react":"https://esm.sh/react@18.3.1","react-dom/client":"https://esm.sh/react-dom@18.3.1/client","react/jsx-runtime":"https://esm.sh/react@18.3.1/jsx-runtime","framer-motion":"https://esm.sh/framer-motion@11.3.0","three":"https://esm.sh/three@0.166.1"}}
+</script>
+  <script type="module">
+    import { createRoot } from 'react-dom/client';
+    import { createElement as h, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+    import { motion, AnimatePresence } from 'framer-motion';
+    import * as THREE from 'three';
+
+    /* ═══════════════════ UTILS ═══════════════════════════════════════════════ */
+    const fract = x => x - Math.floor(x);
+    const hash = n => fract(Math.sin(n) * 43758.5453);
+    const n3 = (x, y, z) => (hash(x * 127.1 + y * 311.7 + z * 74.4) + hash(x * 269.5 + y * 183.3 + z * 246.1)) / 2;
+
+    /* ═══════════════════ CORNER BRACKET ══════════════════════════════════════ */
+    // pos is one of: 'tl' | 'tr' | 'bl' | 'br'
+    const CB = ({ pos, sz = 16, col = 'var(--cyan)', t = 1.5 }) => {
+      const iT = pos[0] === 't', iL = pos[1] === 'l';
+      const rot = iT && iL ? 0 : iT ? 90 : !iL ? 180 : 270;
+      return h('svg', {
+        width: sz, height: sz, style: {
+          position: 'absolute', top: iT ? 0 : undefined, bottom: !iT ? 0 : undefined,
+          left: iL ? 0 : undefined, right: !iL ? 0 : undefined, transform: `rotate(${rot}deg)`
+        }
+      },
+        h('path', { d: `M0 ${sz} L0 0 L${sz} 0`, fill: 'none', stroke: col, strokeWidth: t }));
+    };
+
+    /* ═══════════════════ PANEL ═══════════════════════════════════════════════ */
+    const Panel = ({ children, style, delay = 0 }) => h(motion.div, {
+      initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 }, transition: { duration: .5, delay: delay * .08, ease: [.22, 1, .36, 1] },
+      style: { position: 'relative', background: 'var(--panel)', border: '1px solid var(--cyan-b)', backdropFilter: 'blur(14px)', padding: '13px 15px', ...style }
+    },
+      h(CB, { pos: 'tl' }), h(CB, { pos: 'tr' }), h(CB, { pos: 'bl' }), h(CB, { pos: 'br' }), children
+    );
+
+    const Lbl = ({ c, style }) => h('div', { className: 'lbl', style }, c);
+    const Val = ({ c, style }) => h('div', { className: 'val', style }, c);
+
+    /* ═══════════════════ MINI CHART ═══════════════════════════════════════════ */
+    const MiniChart = ({ data = [], color = 'var(--cyan)', height = 28 }) => {
+      if (!data.length) return null;
+      const W = 100, H = height, mx = Math.max(...data, 1);
+      const pts = data.map((v, i) => `${(i / (data.length - 1)) * W},${H - (v / mx) * H}`).join(' ');
+      return h('svg', { viewBox: `0 0 ${W} ${H}`, style: { width: '100%', height }, preserveAspectRatio: 'none' },
+        h('defs', null, h('linearGradient', { id: `mcg${height}`, x1: '0', y1: '0', x2: '0', y2: '1' },
+          h('stop', { offset: '0%', stopColor: color, stopOpacity: .28 }), h('stop', { offset: '100%', stopColor: color, stopOpacity: 0 }))),
+        h('polygon', { points: `0,${H} ${pts} ${W},${H}`, fill: `url(#mcg${height})` }),
+        h('polyline', { points: pts, fill: 'none', stroke: color, strokeWidth: '1.4' }));
+    };
+
+    /* ═══════════════════ STATUS DOT ═════════════════════════════════════════════
+       state: 'on' | 'off' | 'pending'  — reflects a REAL, measured condition */
+    const SDot = ({ state = 'off', label }) => {
+      const col = state === 'on' ? 'var(--cyan)' : state === 'pending' ? 'var(--gold)' : 'var(--td)';
+      const on = state !== 'off';
+      return h('div', { style: { display: 'flex', alignItems: 'center', gap: 7 } },
+        h(motion.div, {
+          animate: { opacity: on ? [1, .25, 1] : 0.15, scale: on ? [1, 1.25, 1] : 1 },
+          transition: { repeat: on ? Infinity : 0, duration: state === 'pending' ? .7 : 1.5 },
+          style: { width: 6, height: 6, borderRadius: '50%', background: on ? col : 'var(--td)', boxShadow: on ? `0 0 7px ${col}` : 'none' }
+        }),
+        h('span', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: col } }, label)
+      );
+    };
+
+    /* ═══════════════════ BAR PROGRESS ══════════════════════════════════════════ */
+    const Bar = ({ pct, color = 'var(--cyan)' }) => h('div', { style: { height: 3, background: 'rgba(93,238,255,0.07)', borderRadius: 2, overflow: 'hidden', marginTop: 2 } },
+      h(motion.div, { animate: { width: `${Math.max(0, Math.min(100, pct))}%` }, transition: { duration: .6 }, style: { height: '100%', background: `linear-gradient(90deg,var(--cyan-dim),${color})`, borderRadius: 2 } })
+    );
+
+    /* ═══════════════════ ORB PARTICLE COUNTS (single source of truth) ═════════
+       These are the REAL numbers rendered — the stats panel reads these exact
+       constants instead of hard-coded decorative numbers. */
+    const ORB_CORE_COUNT = 5000;    // faint cyan ember core — kept sparse on purpose (see note below)
+    const ORB_CLOUD_COUNT = 210000; // sparse floating dust field
+    const ORB_GRAPH_NODES = 1300;   // neural graph nodes (Obsidian-vault style)
+    const ORB_MAX_EDGE_DIST = .68;
+    const ORB_MAX_EDGE_CONN = 4;
+
+    /* ═══════════════════ ORB CANVAS ═════════════════════════════════════════════
+       Redesign: Obsidian graph-view + neural-net look. Bright breathing white
+       center, sparse graph, slowly drifting particle cloud, soft volumetric
+       bloom, dark edges, real empty space. No rainbow sphere, no flat disc, no
+       fully-filled sphere. Graph and cloud rotate independently of each other. */
+    function OrbCanvas({ audioData, orbState, onStats }) {
+      const mountRef = useRef(null);
+      const uniRef = useRef({ bass: 0, mid: 0, high: 0, vol: 0 });
+      const stateRef = useRef(orbState);
+      useEffect(() => { stateRef.current = orbState }, [orbState]);
+      useEffect(() => { uniRef.current = { ...uniRef.current, ...audioData, vol: audioData.volume } }, [audioData]);
+
+      useEffect(() => {
+        const mount = mountRef.current; if (!mount) return;
+        const W = mount.clientWidth, H = mount.clientHeight;
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+        renderer.setSize(W, H); renderer.setClearColor(0, 0);
+        mount.appendChild(renderer.domElement);
+        const scene = new THREE.Scene();
+        const cam = new THREE.PerspectiveCamera(58, W / H, .1, 100);
+        cam.position.set(0, 0, 6.0); // leaves empty space around the graph without the scene feeling empty
+
+        // Soft compression keeps overlapping additive points volumetric instead of
+        // clipping to a flat white disc. State-driven single tint (cyan→gold→
+        // magenta) replaces V4's continuous rainbow hue-cycle — no rainbow sphere.
+        const COLOR_FN = `
+vec3 filmic(vec3 c){ return c/(c+vec3(.6)); }
+vec3 stateTint(float m){
+  vec3 cyan=vec3(.42,.86,1.);
+  vec3 gold=vec3(1.,.72,.28);
+  vec3 mag=vec3(.92,.35,1.);
+  return m<.5 ? mix(cyan,gold,m*2.) : mix(gold,mag,(m-.5)*2.);
+}
+`;
+
+        /* ── CORE — a single soft cyan glow, not a particle cluster. The
+           particle-based core kept reading as a hard, out-of-place disc no
+           matter how it was tuned, so it's replaced entirely with one
+           canvas-based radial-gradient sprite: fully controlled, no additive
+           stacking, no hard edge, always fits the misty theme. */
+        const gc = document.createElement('canvas'); gc.width = gc.height = 256;
+        const gctx = gc.getContext('2d');
+        const grad = gctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+        grad.addColorStop(0, 'rgba(140,225,255,.4)');
+        grad.addColorStop(.28, 'rgba(93,238,255,.24)');
+        grad.addColorStop(.6, 'rgba(60,160,205,.1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        gctx.fillStyle = grad; gctx.fillRect(0, 0, 256, 256);
+        const gTex = new THREE.CanvasTexture(gc);
+        const gMat = new THREE.SpriteMaterial({ map: gTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: .3 });
+        const gSprite = new THREE.Sprite(gMat); gSprite.scale.set(.7, .7, 1);
+        const coreGroup = new THREE.Group(); coreGroup.add(gSprite);
+
+        /* ── CLOUD — sparse floating dust, visible gaps, slow independent drift.
+           Two things caused the previous build to wash out to a solid white
+           ball: (1) the point-size camera-attenuation constant was tuned for a
+           handful of core points, not 210k spread across a large volume, so
+           every particle rendered as a giant soft disc; (2) the density noise
+           used JS's signed `%`, which isn't GLSL fract, so it never produced
+           real zeros — nothing was actually culled. Both are fixed below:
+           points are dust-sized, and ~2/3 of the field is hard-discarded per a
+           correctly-ranged [0,1) noise mask, leaving real dark gaps. */
+        const NC = ORB_CLOUD_COUNT;
+        const nP = new Float32Array(NC * 3), nS = new Float32Array(NC), nSh = new Float32Array(NC),
+          nB = new Float32Array(NC * 3), nPh = new Float32Array(NC), nDen = new Float32Array(NC);
+        for (let i = 0; i < NC; i++) {
+          const i3 = i * 3, r = 1.15 + 2.0 * Math.cbrt(Math.random()); // gap near the core, uniform round fill, thins at the rim
+          const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+          const x = r * Math.sin(ph) * Math.cos(th), y = r * Math.sin(ph) * Math.sin(th), z = r * Math.cos(ph);
+          nP[i3] = x; nP[i3 + 1] = y; nP[i3 + 2] = z; nB[i3] = x; nB[i3 + 1] = y; nB[i3 + 2] = z;
+          nPh[i] = Math.random() * Math.PI * 2;
+          const s = Math.random(); nS[i] = s < .6 ? .35 : s < .87 ? .65 : s < .97 ? 1.05 : 1.7; // fine dust, occasional sparkle
+          nSh[i] = .55 + Math.random() * .45;
+          const nz = n3(x * .6, y * .6, z * .6); // now genuinely [0,1)
+          nDen[i] = nz > .66 ? (nz - .66) / .34 : 0; // ~66% of the field is hard-empty — real gaps, not dim fog
+        }
+        const nGeo = new THREE.BufferGeometry();
+        nGeo.setAttribute('position', new THREE.BufferAttribute(nP, 3));
+        nGeo.setAttribute('size', new THREE.BufferAttribute(nS, 1));
+        nGeo.setAttribute('shade', new THREE.BufferAttribute(nSh, 1));
+        nGeo.setAttribute('density', new THREE.BufferAttribute(nDen, 1));
+        const cloudMat = new THREE.ShaderMaterial({
+          uniforms: { breathe: { value: 0 }, volume: { value: 0 } },
+          vertexShader: `attribute float size;attribute float shade;attribute float density;varying float vA;varying float vSh;
+uniform float breathe;uniform float volume;
+void main(){vSh=shade;
+float d=length(position)/3.15;
+float edge=1.-smoothstep(.5,1.,d);
+vA=density*edge*(.4+volume*.3);
+vec3 p=position*(1.+breathe*.04);
+float s=size*(1.+breathe*.25);
+gl_PointSize=s*(20./(-(modelViewMatrix*vec4(p,1.)).z));
+gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);}`,
+          fragmentShader: `varying float vA;varying float vSh;
+void main(){if(vA<.02)discard;
+vec2 uv=gl_PointCoord-.5;float d=length(uv);if(d>.5)discard;
+float a=pow(1.-smoothstep(0.,.5,d),2.2);
+vec3 col=mix(vec3(.5,.82,1.),vec3(1.),vSh*.4);
+gl_FragColor=vec4(col,a*vA*.4);}`,
+          transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const cloudPoints = new THREE.Points(nGeo, cloudMat);
+        const cloudGroup = new THREE.Group(); cloudGroup.add(cloudPoints);
+
+        /* ── NEURAL GRAPH — sparse Obsidian-vault-style node map, thin glowing
+           edges, rotates on its own axis/speed independent of the cloud. ── */
+        const GN = ORB_GRAPH_NODES; const gnP = [];
+        for (let i = 0; i < GN; i++) {
+          // Cube-root radius = uniform density per unit volume, so the node
+          // cloud fills a true round ball instead of clumping unevenly and
+          // reading as a lumpy, non-circular shape from the camera.
+          const r = .55 + Math.cbrt(Math.random()) * 1.7;
+          const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+          gnP.push(new THREE.Vector3(r * Math.sin(ph) * Math.cos(th), r * Math.sin(ph) * Math.sin(th), r * Math.cos(ph)));
+        }
+        const eV = [], eA = [], MAXD = ORB_MAX_EDGE_DIST, MAXC = ORB_MAX_EDGE_CONN, conn = new Array(GN).fill(0);
+        for (let i = 0; i < GN; i++) {
+          if (conn[i] >= MAXC) continue;
+          const ds = [];
+          for (let j = i + 1; j < GN; j++) { const d = gnP[i].distanceTo(gnP[j]); if (d < MAXD) ds.push({ j, d }) }
+          ds.sort((a, b) => a.d - b.d);
+          for (const { j, d } of ds.slice(0, MAXC)) {
+            if (conn[i] >= MAXC || conn[j] >= MAXC) continue;
+            eV.push(gnP[i].x, gnP[i].y, gnP[i].z, gnP[j].x, gnP[j].y, gnP[j].z);
+            const a = (1 - d / MAXD) * .16; eA.push(a, a); conn[i]++; conn[j]++;
+          }
+        }
+        const edgeCount = eV.length / 6;
+        // Report the REAL rendered numbers up to React state (used by the stats panel).
+        if (onStats) onStats({ core: 0, cloud: NC, nodes: GN, edges: edgeCount });
+
+        const eGeo = new THREE.BufferGeometry();
+        eGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(eV), 3));
+        eGeo.setAttribute('alpha', new THREE.BufferAttribute(new Float32Array(eA), 1));
+        const edgeMat = new THREE.ShaderMaterial({
+          uniforms: { midAmp: { value: 0 }, pulse: { value: 0 }, tint: { value: 0 } },
+          vertexShader: `attribute float alpha;varying float vA;varying float vD;
+uniform float midAmp;uniform float pulse;
+void main(){vA=alpha*(1.+midAmp*2.4+pulse*1.6);vD=length(position);
+gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+          fragmentShader: `varying float vA;varying float vD;uniform float pulse;uniform float tint;
+${COLOR_FN}
+void main(){float pg=pulse*(1.-smoothstep(.3,2.5,vD));
+vec3 c=stateTint(tint);
+gl_FragColor=vec4(filmic(c),vA+pg*.22);}`,
+          transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const edgeLines = new THREE.LineSegments(eGeo, edgeMat);
+
+        const ndGeo = new THREE.BufferGeometry();
+        const ndA = new Float32Array(GN * 3);
+        gnP.forEach((p, i) => { ndA[i * 3] = p.x; ndA[i * 3 + 1] = p.y; ndA[i * 3 + 2] = p.z });
+        ndGeo.setAttribute('position', new THREE.BufferAttribute(ndA, 3));
+        const ndMat = new THREE.ShaderMaterial({
+          uniforms: { time: { value: 0 }, highAmp: { value: 0 }, tint: { value: 0 } },
+          vertexShader: `uniform float highAmp;uniform float time;
+void main(){float f=sin(time*9.+position.x*5.)*highAmp;gl_PointSize=2.1+f*3.6;
+gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+          fragmentShader: `uniform float highAmp;uniform float tint;
+${COLOR_FN}
+void main(){vec2 uv=gl_PointCoord-.5;if(length(uv)>.5)discard;
+float a=1.-smoothstep(0.,.5,length(uv));
+vec3 c=stateTint(tint);
+gl_FragColor=vec4(mix(c,vec3(1.),highAmp*1.2),a*(0.55+highAmp*.4));}`,
+          transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const nodePoints = new THREE.Points(ndGeo, ndMat);
+        const graphGroup = new THREE.Group(); graphGroup.add(edgeLines, nodePoints);
+
+        const rootGroup = new THREE.Group();
+        rootGroup.add(coreGroup, cloudGroup, graphGroup);
+        scene.add(rootGroup);
+
+        /* ── ANIMATION ── */
+        let t = 0, pulse = 0, sB = 0, sM = 0, sH = 0, sV = 0, sTint = 0, raf2;
+        const targetTint = { idle: .02, listening: .05, thinking: .5, speaking: .92 };
+        const animate = () => {
+          raf2 = requestAnimationFrame(animate); t += .008;
+          const { bass, mid, high, vol } = uniRef.current;
+          const lp = .1;
+          sB += (bass - sB) * lp; sM += (mid - sM) * lp; sH += (high - sH) * lp; sV += (vol - sV) * lp;
+          if (sV > .08) pulse = Math.min(1, pulse + .06); else pulse *= .95;
+          const tT = targetTint[stateRef.current] || .02;
+          sTint += (tT - sTint) * .04;
+
+          // Center breathes on mic amplitude (bass + volume), independent of rotation.
+          const breathe = sB * .7 + sV * .5 + Math.sin(t * .6) * .04;
+                    cloudMat.uniforms.breathe.value = breathe; cloudMat.uniforms.volume.value = sV;
+          const gs = .62 + breathe * .3 + Math.sin(t * .9) * .015;
+          gSprite.scale.set(gs, gs, 1);
+          gMat.opacity = .16 + sV * .12 + breathe * .06;
+
+          edgeMat.uniforms.midAmp.value = sM; edgeMat.uniforms.pulse.value = pulse; edgeMat.uniforms.tint.value = sTint;
+          ndMat.uniforms.time.value = t; ndMat.uniforms.highAmp.value = sH; ndMat.uniforms.tint.value = sTint;
+
+          // Graph and cloud rotate independently of each other and of the core.
+          const graphSpd = stateRef.current === 'speaking' ? .0018 : stateRef.current === 'thinking' ? .0009 : .00035;
+          graphGroup.rotation.y += graphSpd; graphGroup.rotation.x = Math.sin(t * .22) * .05;
+          cloudGroup.rotation.y -= .00014 + sV * .00016; cloudGroup.rotation.x = Math.cos(t * .17) * .03;
+          rootGroup.rotation.x = Math.sin(t * .12) * .025; // whole-scene micro-tilt, kept subtle
+
+          // Slow drift on the cloud (independent of the audio-reactive breathing).
+          const pa = nGeo.attributes.position;
+          for (let i = 0; i < NC; i += 6) {
+            const i3 = i * 3, bx = nB[i3], by = nB[i3 + 1], bz = nB[i3 + 2];
+            const nn = n3(bx * .8 + t * .05, by * .8 + t * .04, bz * .8 + t * .035);
+            const drift = .05 + sV * .05 + nn * .04; const ph = nPh[i];
+            pa.array[i3] = bx + Math.sin(t * .2 + ph) * drift;
+            pa.array[i3 + 1] = by + Math.cos(t * .17 + ph * 1.3) * drift;
+            pa.array[i3 + 2] = bz + Math.sin(t * .13 + ph * .72) * drift;
+          }
+          pa.needsUpdate = true;
+
+          renderer.render(scene, cam);
+        };
+        animate();
+
+        const onResize = () => { if (!mount) return; cam.aspect = mount.clientWidth / mount.clientHeight; cam.updateProjectionMatrix(); renderer.setSize(mount.clientWidth, mount.clientHeight) };
+        window.addEventListener('resize', onResize);
+        return () => {
+          cancelAnimationFrame(raf2); window.removeEventListener('resize', onResize);
+          if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+          nGeo.dispose(); eGeo.dispose(); ndGeo.dispose(); gTex.dispose();
+          cloudMat.dispose(); edgeMat.dispose(); ndMat.dispose(); gMat.dispose();
+          renderer.dispose();
+        };
+      }, []);
+
+      return h('div', { ref: mountRef, style: { width: '100%', height: '100%', position: 'absolute', inset: 0 } });
+    }
+
+    /* ═══════════════════ AUDIO ENGINE (voice logic — unchanged behavior) ═══════
+       Mic-level monitoring drives the orb's audio-reactive visuals. Full speech
+       -to-text was intentionally pulled out of V3.5 pending a local Whisper
+       endpoint — wire one up in startSpeechRecognition() below when ready. */
+    function useAudioEngine() {
+      const [orbState, setOrbState] = useState('idle');
+      const [audioData, setAudioData] = useState({ bass: 0, mid: 0, high: 0, volume: 0 });
+      const [micOn, setMicOn] = useState(false);
+      const [transcript, setTranscript] = useState('');
+      const [interimText, setInterimText] = useState('');
+      const refs = useRef({});
+      const sharedStreamRef = useRef(null);
+
+      const startMicLevel = useCallback(async () => {
+        try {
+          let stream = sharedStreamRef.current;
+          if (!stream) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            sharedStreamRef.current = stream;
+          }
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = .85;
+          ctx.createMediaStreamSource(stream).connect(an);
+          refs.current.audioCtx = ctx; refs.current.analyser = an; refs.current.stream = stream;
+          refs.current.dataArr = new Uint8Array(an.frequencyBinCount);
+          const tick = () => {
+            if (!refs.current.analyser) return;
+            refs.current.analyser.getByteFrequencyData(refs.current.dataArr);
+            const d = refs.current.dataArr, len = d.length;
+            const be = Math.floor(len * .1), me = Math.floor(len * .5);
+            let bs = 0, ms = 0, hs = 0;
+            for (let i = 0; i < be; i++) bs += d[i]; for (let i = be; i < me; i++) ms += d[i]; for (let i = me; i < len; i++) hs += d[i];
+            const bass = bs / be / 255, mid = ms / (me - be) / 255, high = hs / (len - me) / 255, volume = (bass + mid + high) / 3;
+            setAudioData({ bass, mid, high, volume });
+            refs.current.levelRaf = requestAnimationFrame(tick);
+          }; tick();
+          return stream;
+        } catch (e) { console.warn('Mic denied', e); return null }
+      }, []);
+
+      // Placeholder hook point for a local Whisper (or any STT) endpoint.
+      // Call refs.current.onFinalTranscript(text) once you have a final transcript.
+      const startSpeechRecognition = useCallback(() => {
+        console.info('[ALVIS] STT not wired. Use the text box, or connect a local Whisper endpoint here.');
+      }, []);
+
+      const start = useCallback(async () => {
+        const stream = await startMicLevel();
+        if (stream) { setMicOn(true); setOrbState('listening'); startSpeechRecognition(); }
+      }, [startMicLevel, startSpeechRecognition]);
+
+      const stop = useCallback(() => {
+        if (refs.current.levelRaf) cancelAnimationFrame(refs.current.levelRaf);
+        if (refs.current.sr) { refs.current.srActive = false; try { refs.current.sr.stop() } catch (e) { } }
+        if (refs.current.audioCtx) { try { refs.current.audioCtx.close() } catch (e) { } }
+        refs.current.analyser = null; refs.current.audioCtx = null; refs.current.levelRaf = null;
+        setMicOn(false); setOrbState('idle');
+        setAudioData({ bass: 0, mid: 0, high: 0, volume: 0 }); setInterimText('');
+      }, []);
+
+      useEffect(() => () => stop(), []);
+
+      return { orbState, setOrbState, audioData, micOn, start, stop, transcript, interimText, refs };
+    }
+
+    /* ═══════════════════ SESSION METRICS (real — no simulated numbers) ═════════
+       Uptime is measured from actual page-load time. JS heap is read from
+       performance.memory where the browser exposes it (Chrome/Edge); it is
+       reported honestly as unavailable elsewhere rather than faked. */
+    function useSessionMetrics() {
+      const startRef = useRef(Date.now());
+      const [uptime, setUptime] = useState(0);
+      const [heap, setHeap] = useState({ supported: false, used: 0, limit: 0 });
+
+      useEffect(() => {
+        const iv = setInterval(() => {
+          setUptime(Math.floor((Date.now() - startRef.current) / 1000));
+          const mem = performance.memory;
+          if (mem) setHeap({ supported: true, used: mem.usedJSHeapSize, limit: mem.jsHeapSizeLimit });
+        }, 1000);
+        return () => clearInterval(iv);
+      }, []);
+
+      return { uptime, heap };
+    }
+
+    /* ═══════════════════ CONNECTION STATUS (real ping to Hermes Agent) ═════════
+       Calls the API server's GET /health route (gateway/platforms/api_server.py)
+       and measures real round-trip latency. No fabricated "always online"
+       indicators — if hermes gateway isn't running, this reports OFF. */
+    function useConnectionStatus(cfg, addLog) {
+      const [status, setStatus] = useState('pending'); // 'on' | 'off' | 'pending'
+      const [pingMs, setPingMs] = useState(null);
+      const [lastError, setLastError] = useState('');
+
+      const check = useCallback(async () => {
+        setStatus('pending');
+        const base = cfg.url.replace(/\/+$/, '');
+        const isOllama = cfg.backend === 'ollama';
+        const pingPath = isOllama ? '/api/tags' : '/health';
+        const t0 = performance.now();
+        try {
+          const headers = {};
+          if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+          const res = await fetch(base + pingPath, { method: 'GET', headers });
+          const dt = Math.round(performance.now() - t0);
+          if (res.ok) { setStatus('on'); setPingMs(dt); setLastError(''); }
+          else { setStatus('off'); setPingMs(null); setLastError(`HTTP ${res.status}`); }
+        } catch (e) {
+          setStatus('off'); setPingMs(null);
+          setLastError(isOllama ? 'unreachable (CORS, or "ollama serve" not running?)' : 'unreachable (CORS, or hermes gateway not running?)');
+        }
+      }, [cfg.url, cfg.apiKey, cfg.backend]);
+
+      useEffect(() => { check(); const iv = setInterval(check, 15000); return () => clearInterval(iv); }, [check]);
+
+      return { status, pingMs, lastError, recheck: check };
+    }
+
+    /* ═══════════════════ WAVEFORM ═══════════════════════════════════════════════ */
+    function useWaveform(audioData) {
+      const [bars, setBars] = useState(Array(26).fill(.02));
+      useEffect(() => {
+        setBars(p => p.map((_, i) => {
+          const v = audioData.volume;
+          return v > .01 ? Math.max(.02, v * (.5 + .5 * Math.sin(Date.now() * .01 + i * .72))) : Math.max(.02, p[i] * .83 + Math.random() * .016);
+        }));
+      }, [audioData]); return bars;
+    }
+
+    /* ═══════════════════ HERMES AGENT (orchestration engine) ═══════════════════
+       Talks to gateway/platforms/api_server.py, Hermes Agent's own HTTP surface
+       — NOT a direct Ollama/LM-Studio call. Two transports, both streaming:
+
+       'chat'  → POST /v1/chat/completions with stream:true (SSE), OpenAI-shaped
+                 chunks. Simple, robust, works with any frontend.
+       'agent' → POST /v1/runs to start a run, then SSE GET /v1/runs/{id}/events
+                 for the full lifecycle: planning, tool calls (filesystem, shell,
+                 browser, memory — all executed inside Hermes itself), approvals,
+                 and message deltas. Exact event field names can vary by build —
+                 this parses tolerantly and logs the raw event type when unknown.
+
+       The 'model' field is intentionally never set: Hermes docs mark it
+       cosmetic — the actual LLM is whatever the user configured server-side via
+       `hermes setup` / config.yaml (Ollama, a hosted provider, anything). ALVIS
+       never hardcodes an LLM name. */
+    function useHermesAgent(setOrbState, addLog, setTokens) {
+      const [cfg, setCfg] = useState(() => {
+        let sid = null;
+        try { sid = localStorage.getItem('alvis_hermes_session'); } catch (e) { }
+        if (!sid) {
+          sid = (crypto.randomUUID ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+          try { localStorage.setItem('alvis_hermes_session', sid); } catch (e) { }
+        }
+        return { backend: 'hermes', url: 'http://localhost:8642', apiKey: '', sessionId: sid, mode: 'chat', model: 'qwen3.5:9b' };
+      });
+      const [history, setHistory] = useState([]);
+      const [aiResponse, setAiResponse] = useState('');
+      const [isLoading, setIsLoading] = useState(false);
+      const [lastLatency, setLastLatency] = useState(null);
+      const [pendingApproval, setPendingApproval] = useState(null); // { runId, raw }
+      const synthRef = useRef(null);
+      const streamRef = useRef({ aborted: false });
+
+      const speak = useCallback((text) => {
+        if (!text || !window.speechSynthesis) return;
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05; u.pitch = .9;
+        const voices = window.speechSynthesis.getVoices();
+        // Microsoft Edge exposes high-quality "Online (Natural)" neural voices —
+        // prefer those, then any other Microsoft voice, then fall back to any English voice.
+        const pref = voices.find(v => v.name.includes('Microsoft') && v.name.includes('Online') && v.lang.startsWith('en'))
+          || voices.find(v => v.name.includes('Microsoft') && v.lang.startsWith('en'))
+          || voices.find(v => v.name.includes('Microsoft'))
+          || voices.find(v => v.lang.startsWith('en'));
+        if (pref) u.voice = pref;
+        u.onstart = () => setOrbState('speaking');
+        u.onend = () => setOrbState('listening');
+        window.speechSynthesis.speak(u); synthRef.current = u;
+      }, [setOrbState]);
+
+      const authHeaders = useCallback((extra = {}) => {
+        const h2 = { 'Content-Type': 'application/json', ...extra };
+        // Only send Hermes session header if using Hermes backend
+        if (cfg.backend === 'hermes') h2['X-Hermes-Session-Id'] = cfg.sessionId;
+        if (cfg.apiKey) h2['Authorization'] = `Bearer ${cfg.apiKey}`;
+        return h2;
+      }, [cfg.apiKey, cfg.sessionId, cfg.backend]);
+
+      // Reads an SSE (text/event-stream) fetch response line-by-line and calls
+      // onEvent(dataString) for every "data: ..." payload it sees.
+      const pumpSSE = useCallback(async (res, onEvent) => {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            const l = line.trim();
+            if (!l.startsWith('data:')) continue;
+            const payload = l.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            onEvent(payload);
+          }
+        }
+      }, []);
+
+      const newSession = useCallback(() => {
+        const sid = (crypto.randomUUID ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        try { localStorage.setItem('alvis_hermes_session', sid); } catch (e) { }
+        setCfg(c => ({ ...c, sessionId: sid }));
+        setHistory([]); setAiResponse(''); addLog(`New Hermes session: ${sid.slice(0, 8)}…`);
+      }, [addLog]);
+
+      /* ── 'chat' transport: /v1/chat/completions, SSE streaming ── */
+      const sendChat = useCallback(async (newHistory) => {
+        const endpoint = cfg.url.replace(/\/+$/, '') + '/v1/chat/completions';
+        const t0 = performance.now();
+        const isOllama = cfg.backend === 'ollama';
+        const res = await fetch(endpoint, {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({
+            messages: newHistory, stream: true, stream_options: { include_usage: true },
+            // Hermes resolves its own provider/model server-side and ignores this
+            // field; Ollama's OpenAI-compatible /v1/chat/completions requires it.
+            ...(isOllama ? { model: cfg.model || 'qwen3.5:9b' } : {})
+          })
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        let reply = '';
+        await pumpSSE(res, (payload) => {
+          let obj; try { obj = JSON.parse(payload); } catch (e) { return; }
+          const delta = obj.choices?.[0]?.delta?.content;
+          if (delta) { reply += delta; setAiResponse(reply); }
+          if (obj.usage?.total_tokens) setTokens(t => t + obj.usage.total_tokens);
+        });
+        setLastLatency(Math.round(performance.now() - t0));
+        return reply || '(no response)';
+      }, [cfg.url, cfg.backend, cfg.model, authHeaders, pumpSSE, setTokens]);
+
+      /* ── 'agent' transport: /v1/runs + SSE /v1/runs/{id}/events ──
+         Full agent loop — planning, tool calls, approvals — all logged to the
+         System Log so ALVIS's toolless frontend still shows what Hermes did. */
+      const sendAgentRun = useCallback(async (userText) => {
+        const base = cfg.url.replace(/\/+$/, '');
+        const t0 = performance.now();
+        const startRes = await fetch(base + '/v1/runs', {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({ input: userText, stream: true })
+        });
+        if (!startRes.ok) throw new Error(`HTTP ${startRes.status} starting run`);
+        const started = await startRes.json().catch(() => ({}));
+        const runId = started.run_id || started.id;
+        if (!runId) throw new Error('Hermes did not return a run_id');
+        addLog(`Run started: ${String(runId).slice(0, 8)}…`);
+
+        const evRes = await fetch(`${base}/v1/runs/${runId}/events`, { method: 'GET', headers: authHeaders() });
+        if (!evRes.ok || !evRes.body) throw new Error(`HTTP ${evRes.status} on run events`);
+        let reply = '';
+        await pumpSSE(evRes, (payload) => {
+          let ev; try { ev = JSON.parse(payload); } catch (e) { return; }
+          const type = ev.type || ev.event || '';
+          if (/plan/i.test(type)) addLog(`Plan: ${(ev.summary || ev.text || JSON.stringify(ev)).slice(0, 90)}`);
+          else if (/tool_call|tool_start|tool\.start/i.test(type)) addLog(`Tool ▸ ${ev.name || ev.tool || 'unknown'}(${JSON.stringify(ev.arguments || ev.input || {}).slice(0, 70)})`);
+          else if (/tool_result|tool_end|tool\.end/i.test(type)) addLog(`Tool ✓ ${(ev.name || ev.tool || '')}: ${JSON.stringify(ev.output || ev.result || '').slice(0, 70)}`);
+          else if (/approval/i.test(type)) { setPendingApproval({ runId, raw: ev }); addLog('Approval required — see conversation panel.'); }
+          else if (/message.*delta|output_text\.delta|token/i.test(type)) { const d = ev.delta || ev.text || ev.content || ''; if (d) { reply += d; setAiResponse(reply); } }
+          else if (/message|response|final/i.test(type) && (ev.content || ev.text)) { reply = ev.content || ev.text; setAiResponse(reply); }
+          else if (ev.usage?.total_tokens) setTokens(t => t + ev.usage.total_tokens);
+          else if (!/heartbeat|ping/i.test(type)) addLog(`Event: ${type || '(untyped)'}`);
+        });
+        setLastLatency(Math.round(performance.now() - t0));
+        return reply || '(run completed with no message text — check System Log for events)';
+      }, [cfg.url, authHeaders, pumpSSE, addLog, setTokens]);
+
+      const resolveApproval = useCallback(async (approved) => {
+        if (!pendingApproval) return;
+        const { runId } = pendingApproval;
+        const base = cfg.url.replace(/\/+$/, '');
+        try {
+          await fetch(`${base}/v1/runs/${runId}/approval`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ approved }) });
+          addLog(`Approval ${approved ? 'granted' : 'denied'} for run ${String(runId).slice(0, 8)}…`);
+        } catch (e) { addLog(`Approval call failed: ${e.message}`); }
+        setPendingApproval(null);
+      }, [pendingApproval, cfg.url, authHeaders, addLog]);
+
+      const sendMessage = useCallback(async (userText) => {
+        if (!userText.trim() || isLoading) return;
+        const newHistory = [...history, { role: 'user', content: userText }];
+        setHistory(newHistory); setIsLoading(true); setOrbState('thinking'); setAiResponse('');
+        addLog(`User: "${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''}"`);
+        try {
+          const useAgent = cfg.mode === 'agent' && cfg.backend !== 'ollama';
+          const reply = useAgent ? await sendAgentRun(userText) : await sendChat(newHistory);
+          setHistory(h => [...h, { role: 'assistant', content: reply }]);
+          addLog(`ALVIS: "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
+          speak(reply);
+        } catch (e) {
+          const hint = cfg.backend === 'ollama' ? 'is "ollama serve" running?' : 'is "hermes gateway" running with API_SERVER_ENABLED=true?';
+          addLog(`Error: ${e.message} — ${hint}`);
+          setOrbState('listening');
+        } finally { setIsLoading(false); }
+      }, [cfg.mode, cfg.backend, history, isLoading, setOrbState, addLog, speak, sendAgentRun, sendChat]);
+
+      return { cfg, setCfg, history, aiResponse, isLoading, sendMessage, speak, lastLatency, newSession, pendingApproval, resolveApproval };
+    }
+
+    /* ═══════════════════ TOOLSETS / CAPABILITIES (real, fetched from Hermes) ═══
+       Surfaces what Hermes Agent itself reports it can do — planning, tools,
+       filesystem, shell, browser, memory — rather than ALVIS claiming any of
+       this client-side. The browser never runs these tools; Hermes does. */
+    function useToolsets(cfg, connStatus) {
+      const [toolsets, setToolsets] = useState([]);
+      const [profile, setProfile] = useState('');
+
+      const refresh = useCallback(async () => {
+        if (cfg.backend === 'ollama') return; // Ollama has no toolsets
+        const base = cfg.url.replace(/\/+$/, '');
+        const headers = {};
+        if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+        try {
+          const [tsRes, mRes] = await Promise.all([
+            fetch(base + '/v1/toolsets', { headers }).catch(() => null),
+            fetch(base + '/v1/models', { headers }).catch(() => null),
+          ]);
+          if (tsRes && tsRes.ok) { const data = await tsRes.json(); setToolsets(Array.isArray(data) ? data : (data.toolsets || [])); }
+          if (mRes && mRes.ok) { const data = await mRes.json(); const first = (data.data || data.models || [])[0]; if (first) setProfile(first.id || first.name || ''); }
+        } catch (e) { /* leave last-known values */ }
+      }, [cfg.url, cfg.apiKey, cfg.backend]);
+
+      useEffect(() => { if (connStatus === 'on') refresh(); }, [connStatus, refresh]);
+      return { toolsets, profile, refresh };
+    }
+
+    /* ═══════════════════ APP ════════════════════════════════════════════════════ */
+    const INIT_LOG = [
+      { id: 1, t: '00:00:00', m: 'ALVIS core initialized' },
+      { id: 2, t: '00:00:00', m: 'Orb renderer ready — audio-reactive visuals live' },
+      { id: 3, t: '00:00:00', m: 'Checking backend connection…' },
+      { id: 4, t: '00:00:00', m: 'Click the mic to start audio, or type below to chat' },
+    ];
+    const SC = { idle: 'var(--td)', listening: 'var(--cyan)', thinking: 'var(--gold)', speaking: 'var(--mag)' };
+    const fmt = s => { const m = Math.floor(s / 60), sc = s % 60; return `${String(m).padStart(2, '0')}:${String(sc).padStart(2, '0')}` };
+    const fmtBytes = b => b ? `${(b / 1048576).toFixed(1)}MB` : 'N/A';
+
+    function App() {
+      const { orbState, setOrbState, audioData, micOn, start, stop, transcript, interimText, refs } = useAudioEngine();
+      const metrics = useSessionMetrics();
+      const bars = useWaveform(audioData);
+      const [log, setLog] = useState(INIT_LOG);
+      const [tokens, setTokens] = useState(0);
+      const [showSettings, setShowSettings] = useState(false);
+      const [now, setNow] = useState(new Date());
+      const [orbStats, setOrbStats] = useState(null);
+      const [manualInput, setManualInput] = useState('');
+      const logRef = useRef(null);
+
+      useEffect(() => { const iv = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(iv) }, []);
+
+      const addLog = useCallback(msg => {
+        const t = new Date().toLocaleTimeString('en-US', { hour12: false });
+        setLog(p => [...p.slice(-50), { id: Date.now() + Math.random(), t, m: msg }]);
+      }, []);
+
+      const { cfg, setCfg, history, isLoading, sendMessage, lastLatency, newSession, pendingApproval, resolveApproval } = useHermesAgent(setOrbState, addLog, setTokens);
+      const conn = useConnectionStatus(cfg, addLog);
+      const { toolsets, profile } = useToolsets(cfg, conn.status);
+
+      const prevConnStatus = useRef(conn.status);
+      useEffect(() => {
+        if (prevConnStatus.current !== conn.status && conn.status !== 'pending') {
+          addLog(conn.status === 'on' ? `Backend reachable at ${cfg.url} (${conn.pingMs}ms)` : `Backend unreachable at ${cfg.url}${conn.lastError ? ' — ' + conn.lastError : ''}`);
+          prevConnStatus.current = conn.status;
+        }
+      }, [conn.status]);
+
+      // Voice pipeline hook — wired for whenever an STT engine produces final text.
+      useEffect(() => { refs.current.onFinalTranscript = text => { sendMessage(text) }; }, [sendMessage]);
+      useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [log]);
+
+      const sc = SC[orbState] || 'var(--td)';
+      const speechSupported = typeof window !== 'undefined' && !!window.speechSynthesis;
+
+      // Real, derived session stats (no placeholders).
+      const userMsgs = history.filter(m => m.role === 'user');
+      const aiMsgs = history.filter(m => m.role === 'assistant');
+      const wordCount = history.reduce((s, m) => s + m.content.trim().split(/\s+/).filter(Boolean).length, 0);
+
+      const handleManualSend = useCallback(() => {
+        const text = manualInput.trim();
+        if (!text) return;
+        sendMessage(text);
+        setManualInput('');
+      }, [manualInput, sendMessage]);
+
+      const applyPreset = (preset) => {
+        if (preset === 'hermes-local') setCfg(c => ({ ...c, backend: 'hermes', url: 'http://localhost:8642', mode: 'chat' }));
+        if (preset === 'ollama-local') setCfg(c => ({ ...c, backend: 'ollama', url: 'http://localhost:11434', mode: 'chat', model: c.model || 'qwen3.5:9b' }));
+      };
+
+      return h('div', { style: { width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' } },
+
+        /* Grid bg */
+        h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'linear-gradient(rgba(93,238,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(93,238,255,.018) 1px,transparent 1px)', backgroundSize: '68px 68px' } }),
+        /* Scanlines */
+        h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 5, backgroundImage: 'repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.025) 2px,rgba(0,0,0,.025) 4px)' } }),
+        /* Vignette */
+        h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', background: 'radial-gradient(ellipse 80% 80% at 50% 50%,transparent 35%,rgba(2,9,18,.75) 100%)' } }),
+        /* ORB */
+        h('div', { style: { position: 'absolute', inset: 0, zIndex: 1 } }, h(OrbCanvas, { audioData, orbState, onStats: setOrbStats })),
+
+        /* ═══ TOP BAR ═══ */
+        h(motion.div, {
+          initial: { opacity: 0, y: -20 }, animate: { opacity: 1, y: 0 }, transition: { duration: .6 }, style: {
+            position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', padding: '11px 24px', borderBottom: '1px solid var(--cyan-b)',
+            background: 'linear-gradient(180deg,rgba(2,9,18,.94) 0%,transparent 100%)', backdropFilter: 'blur(6px)',
+          }
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 12 } },
+            h('div', { style: { width: 32, height: 32, border: '1.5px solid var(--cyan)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' } },
+              h(CB, { pos: 'tl', sz: 9, t: 1 }), h(CB, { pos: 'br', sz: 9, t: 1 }),
+              h('span', { style: { fontFamily: 'var(--ob)', fontSize: 11, color: 'var(--cyan)', fontWeight: 700 } }, 'A')),
+            h('div', null,
+              h('div', { style: { fontFamily: 'var(--ob)', fontSize: 13, letterSpacing: '.28em', color: 'var(--tp)', fontWeight: 700 } }, 'A·L·V·I·S'),
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 9, color: 'var(--td)', letterSpacing: '.1em' } }, 'ADAPTIVE LEARNING & VOICE INTELLIGENCE SYSTEM'))
+          ),
+          /* Real status pills — each one reflects an actual measured condition */
+          h('div', { style: { display: 'flex', gap: 22, alignItems: 'center' } },
+            [
+              { label: 'MIC', active: micOn },
+              { label: cfg.backend === 'ollama' ? 'OLLAMA' : 'HERMES', active: conn.status === 'on', pending: conn.status === 'pending' },
+              { label: 'SPEECH', active: speechSupported },
+              { label: orbState.toUpperCase(), active: true },
+            ].map(item => h('div', {
+              key: item.label, style: {
+                fontFamily: 'var(--ob)', fontSize: 9, letterSpacing: '.14em', transition: 'all .3s',
+                color: item.pending ? 'var(--gold)' : item.active ? 'var(--cyan)' : 'var(--td)',
+                textShadow: item.active ? '0 0 9px var(--cyan)' : 'none'
+              }
+            }, item.label))
+          ),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 14 } },
+            h('button', { className: 'alvis-btn', onClick: () => setShowSettings(s => !s), style: { fontFamily: 'var(--ob)', fontSize: 8, letterSpacing: '.12em', color: showSettings ? 'var(--cyan)' : 'var(--td)', padding: '4px 8px' } }, '⚙ API'),
+            h('div', { style: { fontFamily: 'var(--ob)', fontSize: 17, color: 'var(--tp)', fontWeight: 600, letterSpacing: '.06em' } }, now.toLocaleTimeString('en-US', { hour12: false }))
+          )
+        ),
+
+        /* ═══ SETTINGS PANEL ═══ */
+        h(AnimatePresence, null, showSettings && h(motion.div, {
+          key: 'settings', initial: { opacity: 0, y: -12 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -12 }, style: {
+            position: 'absolute', top: 56, left: '50%', transform: 'translateX(-50%)', zIndex: 50,
+            width: 620, maxHeight: '80vh', overflowY: 'auto', background: 'rgba(4,14,28,.97)', border: '1px solid var(--cyan-b)', backdropFilter: 'blur(20px)', padding: 20,
+          }
+        },
+          h(CB, { pos: 'tl' }), h(CB, { pos: 'tr' }), h(CB, { pos: 'bl' }), h(CB, { pos: 'br' }),
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 } },
+            h('div', { style: { fontFamily: 'var(--ob)', fontSize: 11, color: 'var(--cyan)', letterSpacing: '.15em' } }, 'AI BACKEND CONNECTION'),
+            h(SDot, { state: conn.status, label: conn.status === 'on' ? `CONNECTED · ${conn.pingMs}ms` : conn.status === 'pending' ? 'CHECKING…' : `OFFLINE${conn.lastError ? ' · ' + conn.lastError : ''}` })
+          ),
+          h('div', null,
+            h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, 'BACKEND'),
+            h('div', { style: { display: 'flex', gap: 6 } },
+              [{ id: 'hermes', label: 'Hermes Agent' }, { id: 'ollama', label: 'Ollama (local)' }].map(b => h('button', {
+                key: b.id, className: 'alvis-btn', onClick: () => applyPreset(b.id === 'hermes' ? 'hermes-local' : 'ollama-local'),
+                style: { fontSize: 10, padding: '6px 10px', flex: 1, background: cfg.backend === b.id ? 'rgba(93,238,255,.18)' : undefined, color: cfg.backend === b.id ? 'var(--cyan)' : 'var(--td)' }
+              }, b.label))
+            )
+          ),
+          h('div', { style: { display: 'flex', gap: 8, margin: '10px 0 12px', flexWrap: 'wrap' } },
+            h('button', { className: 'alvis-btn', style: { fontSize: 10, padding: '6px 10px' }, onClick: conn.recheck, disabled: conn.status === 'pending' }, conn.status === 'pending' ? 'Testing…' : 'Test connection'),
+            h('button', { className: 'alvis-btn', style: { fontSize: 10, padding: '6px 10px' }, onClick: newSession }, 'New session')
+          ),
+          h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 } },
+            h('div', null,
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, cfg.backend === 'ollama' ? 'OLLAMA ENDPOINT' : 'API SERVER ENDPOINT'),
+              h('input', {
+                className: 'alvis-input', value: cfg.url, onChange: e => setCfg(c => ({ ...c, url: e.target.value })),
+                style: { width: '100%', background: 'rgba(93,238,255,.06)', border: '1px solid var(--cyan-b)', color: 'var(--cyan)', fontSize: 12, padding: '6px 8px' }
+              })),
+            h('div', null,
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, 'TRANSPORT'),
+              h('div', { style: { display: 'flex', gap: 6 } },
+                ['chat', 'agent'].map(m => h('button', {
+                  key: m, className: 'alvis-btn', onClick: () => setCfg(c => ({ ...c, mode: m })),
+                  disabled: m === 'agent' && cfg.backend === 'ollama',
+                  style: { fontSize: 10, padding: '6px 10px', flex: 1, background: cfg.mode === m ? 'rgba(93,238,255,.18)' : undefined, color: cfg.mode === m ? 'var(--cyan)' : 'var(--td)' }
+                }, m === 'chat' ? '/v1/chat/completions' : '/v1/runs (agent)'))
+              )),
+            cfg.backend === 'ollama' ? h('div', null,
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, 'MODEL (e.g. qwen3.5:9b, llama3.1, mistral)'),
+              h('input', {
+                className: 'alvis-input', value: cfg.model, onChange: e => setCfg(c => ({ ...c, model: e.target.value })),
+                style: { width: '100%', background: 'rgba(93,238,255,.06)', border: '1px solid var(--cyan-b)', color: 'var(--cyan)', fontSize: 12, padding: '6px 8px' }
+              })) : h('div', null,
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, 'API_SERVER_KEY (Authorization: Bearer)'),
+              h('input', {
+                className: 'alvis-input', value: cfg.apiKey, type: 'password', onChange: e => setCfg(c => ({ ...c, apiKey: e.target.value })),
+                style: { width: '100%', background: 'rgba(93,238,255,.06)', border: '1px solid var(--cyan-b)', color: 'var(--cyan)', fontSize: 12, padding: '6px 8px' }
+              })),
+            h('div', null,
+              h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 4 } }, 'SESSION ID (X-Hermes-Session-Id)'),
+              h('input', {
+                className: 'alvis-input', value: cfg.sessionId, onChange: e => setCfg(c => ({ ...c, sessionId: e.target.value })),
+                style: { width: '100%', background: 'rgba(93,238,255,.06)', border: '1px solid var(--cyan-b)', color: 'var(--cyan)', fontSize: 12, padding: '6px 8px' }
+              }))
+          ),
+          toolsets.length > 0 && h('div', { style: { marginBottom: 10 } },
+            h('div', { style: { fontFamily: 'var(--mo)', fontSize: 11, color: 'var(--td)', marginBottom: 5 } }, 'TOOLSETS REPORTED BY BACKEND'),
+            h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+              toolsets.map((ts, i) => h('span', {
+                key: i, style: {
+                  fontFamily: 'var(--mo)', fontSize: 10, padding: '3px 8px', border: `1px solid ${ts.enabled !== false ? 'var(--cyan-b)' : 'rgba(120,140,150,.2)'}`,
+                  color: ts.enabled !== false ? 'var(--cyan)' : 'var(--td)'
+                }
+              }, ts.name || ts.label || String(ts)))
+            )
+          ),
+          cfg.backend === 'ollama' ? h('div', { style: { fontFamily: 'var(--mo)', fontSize: 10, color: 'var(--td)', lineHeight: 1.7, borderTop: '1px solid rgba(93,238,255,.1)', paddingTop: 10 } },
+            h('div', { style: { color: 'var(--cyan)', marginBottom: 4 } }, 'Ollama runs models fully locally — good for quick testing without the Hermes gateway:'),
+            '1. Install Ollama, then pull a model: ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'ollama pull qwen3.5:9b'), '.', h('br', null),
+            '2. Start the server (usually already running as a service): ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'ollama serve'), ' — listens on :11434 by default.', h('br', null),
+            '3. If this page can\'t reach it, set ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'OLLAMA_ORIGINS=*'), ' (or this page\'s origin) as an env var before starting Ollama, for CORS.', h('br', null), h('br', null),
+            'Unlike Hermes, Ollama\'s OpenAI-compatible endpoint requires a ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'model'), ' name — set it in the MODEL field above to match a model you\'ve pulled. No tool/agent runs — chat transport only.'
+          ) : h('div', { style: { fontFamily: 'var(--mo)', fontSize: 10, color: 'var(--td)', lineHeight: 1.7, borderTop: '1px solid rgba(93,238,255,.1)', paddingTop: 10 } },
+            h('div', { style: { color: 'var(--cyan)', marginBottom: 4 } }, 'Hermes Agent is the orchestration engine — planning, tools, filesystem, shell, browser, and memory all run inside it, not in this page:'),
+            '1. Install & configure a provider once: ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'hermes setup'), ' (or ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'hermes setup --portal'), ' for Nous Portal).', h('br', null),
+            '2. Enable the HTTP surface in ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, '~/.hermes/.env'), ': ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'API_SERVER_ENABLED=true'), ' and ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'API_SERVER_KEY=…'), '.', h('br', null),
+            '3. Start it: ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'hermes gateway'), ' — it listens on :8642 by default.', h('br', null),
+            '4. If a browser must call it directly (this page), also set ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, 'API_SERVER_CORS_ORIGINS'), ' to this page\'s origin.', h('br', null), h('br', null),
+            'The model field is never sent — Hermes resolves whichever provider/model is configured in config.yaml. Switch models with ', h('span', { className: 'mono', style: { color: 'var(--cyan)' } }, '/model <name>'), ' from any Hermes surface, not from here.'
+          )
+        )),
+
+        /* ═══ LEFT PANEL — all values below are real, measured, or derived ═══ */
+        h('div', { style: { position: 'absolute', left: 18, top: 60, bottom: 18, zIndex: 20, width: 232, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', scrollbarWidth: 'none' } },
+          h(Panel, { delay: 0 },
+            h(Lbl, { c: 'SESSION' }),
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 9 } },
+              h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 } },
+                h('div', null, h(Lbl, { c: 'UPTIME' }), h(Val, { c: fmt(metrics.uptime), style: { fontSize: 15 } })),
+                h('div', null, h(Lbl, { c: 'JS HEAP' }), h(Val, { c: metrics.heap.supported ? fmtBytes(metrics.heap.used) : 'N/A', style: { fontSize: 15 } }))
+              ),
+              metrics.heap.supported && h('div', null, h(Bar, { pct: (metrics.heap.used / metrics.heap.limit) * 100 }))
+            )
+          ),
+          h(Panel, { delay: 1 },
+            h(Lbl, { c: 'AGENT RUNTIME' }),
+            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 } },
+              h('div', null, h(Lbl, { c: 'PROFILE' }), h(Val, { c: profile || '—', style: { fontSize: 14 } })),
+              h('div', null, h(Lbl, { c: 'TRANSPORT' }), h(Val, { c: cfg.mode === 'agent' ? '/v1/runs' : 'SSE chat', style: { fontSize: 14 } })),
+              h('div', null, h(Lbl, { c: 'LAST CALL' }), h(Val, { c: lastLatency != null ? `${lastLatency}ms` : '—', style: { fontSize: 14 } })),
+              h('div', null, h(Lbl, { c: 'TOKENS' }), h(Val, { c: tokens.toLocaleString(), style: { fontSize: 14, color: 'var(--gold)' } }))
+            )
+          ),
+          h(Panel, { delay: 2 },
+            h(Lbl, { c: 'CONNECTION STATUS' }),
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h(SDot, { state: conn.status, label: `BACKEND (${conn.pingMs != null ? conn.pingMs + 'ms' : '—'})` }),
+              h(SDot, { state: micOn ? 'on' : 'off', label: 'AUDIO PIPELINE' }),
+              h(SDot, { state: isLoading ? 'pending' : 'off', label: 'INFERENCE ACTIVE' }),
+              h(SDot, { state: speechSupported ? 'on' : 'off', label: 'SPEECH SYNTHESIS' })
+            )
+          ),
+          h(Panel, { delay: 3, style: { flex: 1, display: 'flex', flexDirection: 'column' } },
+            h(Lbl, { c: 'SYSTEM LOG' }),
+            h('div', { ref: logRef, style: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, scrollbarWidth: 'none' } },
+              log.map(e => h(motion.div, {
+                key: e.id, initial: { opacity: 0, x: -6 }, animate: { opacity: 1, x: 0 }, transition: { duration: .2 },
+                style: { display: 'flex', gap: 6, alignItems: 'flex-start' }
+              },
+                h('span', { style: { fontFamily: 'var(--mo)', fontSize: 9, color: 'var(--td)', flexShrink: 0 } }, [e.t]),
+                h('span', { style: { fontFamily: 'var(--mo)', fontSize: 9.5, color: 'var(--ts)', lineHeight: 1.5 } }, e.m)
+              ))
+            )
+          )
+        ),
+
+        /* ═══ RIGHT PANEL — real render stats, real session stats, real chat ═══ */
+        h('div', { style: { position: 'absolute', right: 18, top: 60, bottom: 18, zIndex: 20, width: 250, display: 'flex', flexDirection: 'column', gap: 8 } },
+          h(Panel, { delay: 0 },
+            h(Lbl, { c: 'ORB RENDER STATS' }),
+            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 } },
+              h('div', null, h(Lbl, { c: 'CORE PTS' }), h(Val, { c: orbStats ? orbStats.core.toLocaleString() : '…', style: { fontSize: 15 } })),
+              h('div', null, h(Lbl, { c: 'CLOUD PTS' }), h(Val, { c: orbStats ? orbStats.cloud.toLocaleString() : '…', style: { fontSize: 15 } })),
+              h('div', null, h(Lbl, { c: 'GRAPH NODES' }), h(Val, { c: orbStats ? orbStats.nodes.toLocaleString() : '…', style: { fontSize: 15 } })),
+              h('div', null, h(Lbl, { c: 'EDGES' }), h(Val, { c: orbStats ? orbStats.edges.toLocaleString() : '…', style: { fontSize: 15 } }))
+            )
+          ),
+          h(Panel, { delay: 1 },
+            h(Lbl, { c: 'SESSION STATS' }),
+            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 } },
+              h('div', null, h(Lbl, { c: 'MESSAGES' }), h(Val, { c: String(history.length), style: { fontSize: 16 } })),
+              h('div', null, h(Lbl, { c: 'YOU / ALVIS' }), h(Val, { c: `${userMsgs.length} / ${aiMsgs.length}`, style: { fontSize: 16 } })),
+              h('div', null, h(Lbl, { c: 'WORDS' }), h(Val, { c: wordCount.toLocaleString(), style: { fontSize: 16 } })),
+              h('div', null, h(Lbl, { c: 'SESSION' }), h(Val, { c: fmt(metrics.uptime), style: { fontSize: 16 } }))
+            )
+          ),
+          /* Conversation history + working text input (real chat, no STT required) */
+          h(Panel, { delay: 2, style: { flex: 1, display: 'flex', flexDirection: 'column' } },
+            h(Lbl, { c: 'CONVERSATION' }),
+            h('div', { style: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, scrollbarWidth: 'thin', marginBottom: 8 } },
+              history.length === 0 && h('div', { style: { fontFamily: 'var(--mo)', fontSize: 10, color: 'var(--td)', lineHeight: 1.6 } }, 'Type a message below, or speak while the mic is on, to begin.'),
+              history.map((msg, i) => h(motion.div, {
+                key: i, initial: { opacity: 0, y: 4 }, animate: { opacity: 1, y: 0 },
+                style: {
+                  padding: '6px 8px', borderLeft: `2px solid ${msg.role === 'user' ? 'var(--cyan)' : 'var(--mag)'}`,
+                  background: `${msg.role === 'user' ? 'rgba(93,238,255,' : 'rgba(217,70,239,'}0.05)`, marginBottom: 2
+                }
+              },
+                h('div', { style: { fontFamily: 'var(--ob)', fontSize: 8, letterSpacing: '.12em', color: msg.role === 'user' ? 'var(--cyan)' : 'var(--mag)', marginBottom: 3 } }, msg.role === 'user' ? 'YOU' : 'ALVIS'),
+                h('div', { style: { fontFamily: 'var(--mo)', fontSize: 10, color: 'var(--ts)', lineHeight: 1.5 } }, msg.content)
+              )),
+              isLoading && h(motion.div, {
+                animate: { opacity: [.4, 1, .4] }, transition: { repeat: Infinity, duration: 1.1 },
+                style: { fontFamily: 'var(--ob)', fontSize: 8, color: 'var(--gold)', letterSpacing: '.15em', marginTop: 4 }
+              }, '▸ PROCESSING...'),
+              pendingApproval && h('div', {
+                style: { border: '1px solid var(--gold)', background: 'rgba(245,158,11,.08)', padding: '8px', marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }
+              },
+                h('div', { style: { fontFamily: 'var(--ob)', fontSize: 8, letterSpacing: '.1em', color: 'var(--gold)' } }, '▸ HERMES REQUESTS APPROVAL'),
+                h('div', { style: { fontFamily: 'var(--mo)', fontSize: 9.5, color: 'var(--ts)', lineHeight: 1.5 } }, JSON.stringify(pendingApproval.raw).slice(0, 160)),
+                h('div', { style: { display: 'flex', gap: 6 } },
+                  h('button', { className: 'alvis-btn', onClick: () => resolveApproval(true), style: { fontSize: 10, padding: '4px 10px', color: 'var(--gold)', borderColor: 'var(--gold)' } }, 'Approve'),
+                  h('button', { className: 'alvis-btn', onClick: () => resolveApproval(false), style: { fontSize: 10, padding: '4px 10px' } }, 'Deny')
+                )
+              )
+            ),
+            h('div', { style: { display: 'flex', gap: 6 } },
+              h('input', {
+                className: 'alvis-input', value: manualInput, placeholder: 'Message ALVIS…',
+                onChange: e => setManualInput(e.target.value),
+                onKeyDown: e => { if (e.key === 'Enter') handleManualSend(); },
+                style: { flex: 1, background: 'rgba(93,238,255,.06)', border: '1px solid var(--cyan-b)', color: 'var(--cyan)', fontSize: 11, padding: '6px 8px' }
+              }),
+              h('button', { className: 'alvis-btn', onClick: handleManualSend, disabled: isLoading || !manualInput.trim(), style: { fontSize: 10, padding: '6px 10px' } }, '→')
+            )
+          )
+        ),
+
+        /* ═══ BOTTOM CENTER ═══ */
+        h('div', { style: { position: 'absolute', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 9 } },
+
+          h(AnimatePresence, null,
+            (interimText || transcript) && h(motion.div, {
+              key: 'transcript', initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: 8 },
+              style: {
+                fontFamily: 'var(--mo)', fontSize: 13, color: interimText ? 'rgba(93,238,255,.6)' : 'var(--cyan)',
+                textAlign: 'center', maxWidth: 500, padding: '5px 14px', background: 'rgba(4,14,28,.7)',
+                border: '1px solid var(--cyan-b)', backdropFilter: 'blur(8px)',
+                textShadow: interimText ? 'none' : '0 0 10px rgba(93,238,255,.3)'
+              }
+            },
+              interimText || transcript
+            )
+          ),
+
+          h('div', { style: { display: 'flex', gap: 22, alignItems: 'center' } },
+            ['IDLE', 'LISTENING', 'THINKING', 'SPEAKING'].map(s => {
+              const active = orbState.toUpperCase() === s;
+              const col = SC[s.toLowerCase()] || 'var(--td)';
+              return h('div', { key: s, style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 } },
+                h(motion.div, {
+                  animate: { opacity: active ? 1 : .18, scale: active ? 1 : .85 },
+                  style: { fontFamily: 'var(--ob)', fontSize: 8.5, letterSpacing: '.14em', color: col, textShadow: active ? `0 0 10px ${col}` : 'none' }
+                }, s),
+                h(motion.div, {
+                  animate: { opacity: active ? 1 : .1, height: active ? 18 : 4 },
+                  style: { width: 1, background: col, borderRadius: 1 }
+                })
+              );
+            })
+          ),
+
+          h('div', {
+            style: {
+              display: 'flex', gap: 2.5, alignItems: 'center', height: 46, background: 'rgba(4,14,28,.78)',
+              border: '1px solid var(--cyan-b)', backdropFilter: 'blur(8px)', padding: '0 14px', position: 'relative'
+            }
+          },
+            h(CB, { pos: 'tl', sz: 10 }), h(CB, { pos: 'tr', sz: 10 }), h(CB, { pos: 'bl', sz: 10 }), h(CB, { pos: 'br', sz: 10 }),
+            bars.map((v, i) => h(motion.div, {
+              key: i, animate: { height: 4 + v * 32, opacity: .32 + v * .68 }, transition: { duration: .07, ease: 'linear' },
+              style: {
+                width: 3, background: orbState === 'speaking' ? 'var(--mag)' : orbState === 'thinking' ? 'var(--gold)' : 'var(--cyan)',
+                borderRadius: '1px', minHeight: 4, alignSelf: 'center', boxShadow: v > .55 ? `0 0 5px ${orbState === 'speaking' ? 'var(--mag)' : orbState === 'thinking' ? 'var(--gold)' : 'var(--cyan)'}` : 'none'
+              }
+            }))
+          ),
+
+          h('div', { style: { textAlign: 'center' } },
+            h('div', { style: { fontFamily: 'var(--mo)', fontSize: 9, color: 'var(--td)', letterSpacing: '.2em', marginBottom: 2 } }, 'PRIMARY DIRECTIVE — BORN TO SERVE'),
+            h('div', { style: { fontFamily: 'var(--ob)', fontSize: 24, fontWeight: 900, color: 'var(--tp)', letterSpacing: '.07em', textShadow: '0 0 22px rgba(93,238,255,.25)' } },
+              tokens.toLocaleString(), h('span', { style: { fontSize: 11, color: 'var(--td)', marginLeft: 5 } }, 'TOKENS USED'))
+          ),
+
+          h(motion.button, {
+            onClick: micOn ? stop : start, whileHover: { scale: 1.06 }, whileTap: { scale: .94 }, style: {
+              width: 52, height: 52, borderRadius: 0,
+              border: `1.5px solid ${micOn ? sc : 'var(--cyan-b)'}`,
+              background: micOn ? `${sc}18` : 'rgba(4,14,28,.85)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              position: 'relative', backdropFilter: 'blur(10px)',
+              boxShadow: micOn ? `0 0 22px ${sc}48,inset 0 0 18px ${sc}08` : 'none',
+              transition: 'all .3s',
+            }
+          },
+            h(CB, { pos: 'tl', sz: 9, col: micOn ? sc : 'var(--cyan-b)' }), h(CB, { pos: 'tr', sz: 9, col: micOn ? sc : 'var(--cyan-b)' }),
+            h(CB, { pos: 'bl', sz: 9, col: micOn ? sc : 'var(--cyan-b)' }), h(CB, { pos: 'br', sz: 9, col: micOn ? sc : 'var(--cyan-b)' }),
+            h(motion.svg, {
+              animate: { scale: micOn ? [1, 1.15, 1] : 1 }, transition: { repeat: micOn ? Infinity : 0, duration: 1.4 },
+              width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none'
+            },
+              h('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3, fill: micOn ? sc : 'var(--td)', style: { filter: micOn ? `drop-shadow(0 0 5px ${sc})` : 'none' } }),
+              h('path', { d: 'M5 10a7 7 0 0 0 14 0M12 19v3M8 22h8', stroke: micOn ? sc : 'var(--td)', strokeWidth: '1.5', strokeLinecap: 'round' })
+            )
+          )
+        ),
+
+        /* State badge */
+        h(AnimatePresence, null, h(motion.div, {
+          key: orbState, initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: 4 }, style: {
+            position: 'absolute', top: 54, left: '50%', transform: 'translateX(-50%)', zIndex: 30,
+            fontFamily: 'var(--ob)', fontSize: 9, letterSpacing: '.22em', color: sc,
+            padding: '4px 12px', border: `1px solid ${sc}35`, background: `${sc}07`, textShadow: `0 0 9px ${sc}`,
+          }
+        }, `▸ ${orbState.toUpperCase()}`))
+      );
+    }
+
+    createRoot(document.getElementById('root')).render(h(App, null));
+  </script>
+</body>
+
+</html>
