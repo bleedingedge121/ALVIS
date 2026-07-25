@@ -565,15 +565,28 @@ gl_FragColor=vec4(mix(c,vec3(1.),highAmp*1.2),a*(0.55+highAmp*.4));}`,
        `hermes setup` / config.yaml (Ollama, a hosted provider, anything). ALVIS
        never hardcodes an LLM name. */
     function useHermesAgent(setOrbState, addLog, setTokens) {
-      const [cfg, setCfg] = useState(() => {
+      const [cfg, setCfgRaw] = useState(() => {
         let sid = null;
         try { sid = localStorage.getItem('alvis_hermes_session'); } catch (e) { }
         if (!sid) {
           sid = (crypto.randomUUID ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`);
           try { localStorage.setItem('alvis_hermes_session', sid); } catch (e) { }
         }
-        return { backend: 'hermes', url: 'http://localhost:8642', apiKey: '', sessionId: sid, mode: 'chat', model: 'qwen3.5:9b' };
+        const defaults = { backend: 'hermes', url: 'http://localhost:8642', apiKey: '', sessionId: sid, mode: 'chat', model: 'qwen3.5:9b' };
+        try {
+          const saved = JSON.parse(localStorage.getItem('alvis_hermes_cfg') || 'null');
+          if (saved && typeof saved === 'object') return { ...defaults, ...saved, sessionId: sid };
+        } catch (e) { }
+        return defaults;
       });
+      // Wrap setCfg so every update also persists to localStorage (apiKey included).
+      const setCfg = useCallback((updater) => {
+        setCfgRaw(prev => {
+          const next = typeof updater === 'function' ? updater(prev) : updater;
+          try { localStorage.setItem('alvis_hermes_cfg', JSON.stringify(next)); } catch (e) { }
+          return next;
+        });
+      }, []);
       const [history, setHistory] = useState([]);
       const [aiResponse, setAiResponse] = useState('');
       const [isLoading, setIsLoading] = useState(false);
@@ -582,8 +595,34 @@ gl_FragColor=vec4(mix(c,vec3(1.),highAmp*1.2),a*(0.55+highAmp*.4));}`,
       const synthRef = useRef(null);
       const streamRef = useRef({ aborted: false });
 
-      const speak = useCallback((text) => {
-        if (!text || !window.speechSynthesis) return;
+      const speak = useCallback(async (text) => {
+        if (!text) return;
+        // Prefer Hermes's own edge-tts pipeline (POST /v1/tts) so ALVIS uses
+        // the exact same voice configured in config.yaml's tts: section,
+        // instead of whatever voice happens to be installed in the browser.
+        if (cfg.backend === 'hermes') {
+          try {
+            const h = { 'Content-Type': 'application/json' };
+            if (cfg.apiKey) h['Authorization'] = `Bearer ${cfg.apiKey}`;
+            const base = cfg.url.replace(/\/+$/, '');
+            const res = await fetch(base + '/v1/tts', { method: 'POST', headers: h, body: JSON.stringify({ text }) });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            if (synthRef.current instanceof Audio) { synthRef.current.pause(); }
+            const audio = new Audio(url);
+            audio.onplay = () => setOrbState('speaking');
+            audio.onended = () => { setOrbState('listening'); URL.revokeObjectURL(url); };
+            audio.onerror = () => { setOrbState('listening'); URL.revokeObjectURL(url); };
+            synthRef.current = audio;
+            await audio.play();
+            return;
+          } catch (e) {
+            addLog(`Hermes TTS failed (${e.message}) — falling back to browser voice`);
+            // fall through to browser speechSynthesis below
+          }
+        }
+        if (!window.speechSynthesis) return;
         window.speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(text);
         u.rate = 1.05; u.pitch = .9;
@@ -598,7 +637,7 @@ gl_FragColor=vec4(mix(c,vec3(1.),highAmp*1.2),a*(0.55+highAmp*.4));}`,
         u.onstart = () => setOrbState('speaking');
         u.onend = () => setOrbState('listening');
         window.speechSynthesis.speak(u); synthRef.current = u;
-      }, [setOrbState]);
+      }, [setOrbState, cfg.backend, cfg.apiKey, cfg.url, addLog]);
 
       const authHeaders = useCallback((extra = {}) => {
         const h2 = { 'Content-Type': 'application/json', ...extra };
